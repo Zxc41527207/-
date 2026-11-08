@@ -3,59 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 扫描与拍照 - 带黄框</title>
+    <title>AI 自動抓取四角</title>
+    <!-- 引入 OpenCV.js -->
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <style>
         body { margin: 0; padding: 0; background-color: #000; height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-family: sans-serif; }
-        #camera-container { position: relative; flex: 1; overflow: hidden; background: #222; }
+        #camera-container { position: relative; flex: 1; overflow: hidden; }
         #video { width: 100%; height: 100%; object-fit: cover; }
-        /* 黄框动画就在这个 canvas 上 */
+        /* 用于画动态黄框的 canvas */
         #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+        /* 隐藏的 canvas，用于 OpenCV 处理图像 */
+        #process-canvas { display: none; }
         #photo-canvas { display: none; }
         
-        .controls { height: 130px; background-color: #111; display: flex; justify-content: space-around; align-items: center; padding: 0 20px; z-index: 10; }
-        
-        #capture-btn { width: 70px; height: 70px; border-radius: 50%; background-color: transparent; border: 5px solid #fff; position: relative; cursor: pointer; transition: transform 0.1s; }
-        #capture-btn::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 55px; height: 55px; background-color: #fff; border-radius: 50%; transition: background-color 0.2s; }
-        #capture-btn:active::after { background-color: #ccc; }
+        .controls { height: 120px; background-color: #111; display: flex; justify-content: space-around; align-items: center; z-index: 10; }
+        #capture-btn { width: 70px; height: 70px; border-radius: 50%; background-color: transparent; border: 5px solid #fff; position: relative; cursor: pointer; }
+        #capture-btn::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 55px; height: 55px; background-color: #fff; border-radius: 50%; }
         #capture-btn:disabled { opacity: 0.3; }
-
-        .btn { padding: 10px 20px; background-color: #333; color: #fff; border: none; border-radius: 20px; font-size: 14px; cursor: pointer; }
-
-        #flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: white; opacity: 0; pointer-events: none; transition: opacity 0.1s ease-out; z-index: 5; }
-
+        .btn { padding: 10px 20px; background-color: #333; color: #fff; border: none; border-radius: 20px; font-size: 14px; }
+        
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #FFD700; font-size: 16px; z-index: 10; display: none; }
+        
         #preview-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100; }
-        #preview-modal img { max-width: 90%; max-height: 70%; border-radius: 8px; box-shadow: 0 0 20px rgba(255,255,255,0.2); }
+        #preview-modal img { max-width: 90%; max-height: 70%; border-radius: 8px; }
         .modal-btns { margin-top: 20px; display: flex; gap: 15px; }
-        .modal-btns button { padding: 12px 30px; border: none; border-radius: 25px; font-size: 16px; cursor: pointer; }
+        .modal-btns button { padding: 12px 30px; border: none; border-radius: 25px; font-size: 16px; }
         #save-btn { background: #4CAF50; color: white; }
         #close-preview { background: #fff; color: #000; }
-
-        #error-banner { display:none; position:absolute; top:20px; left:50%; transform:translateX(-50%); background:rgba(220,53,69,0.9); color:white; padding:12px; border-radius:8px; text-align:center; width:80%; z-index:20; font-size:14px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
     </style>
 </head>
 <body>
 
     <div id="camera-container">
         <video id="video" autoplay playsinline muted></video>
-        <!-- 这个 canvas 就是画黄框的地方 -->
         <canvas id="overlay"></canvas>
-        <div id="flash"></div>
-        <div id="error-banner"></div>
+        <div id="loading">正在加載 AI 識別引擎...</div>
     </div>
 
     <div class="controls">
-        <button id="start-btn" class="btn">开启相机</button>
+        <button id="start-btn" class="btn">開啟相機</button>
         <button id="capture-btn" disabled></button>
         <div style="width: 80px;"></div>
     </div>
 
+    <canvas id="process-canvas"></canvas>
     <canvas id="photo-canvas"></canvas>
 
     <div id="preview-modal">
-        <img id="preview-img" src="" alt="拍照结果">
+        <img id="preview-img" src="">
         <div class="modal-btns">
-            <button id="save-btn">保存到相册</button>
-            <button id="close-preview">关闭</button>
+            <button id="save-btn">保存照片</button>
+            <button id="close-preview">關閉</button>
         </div>
     </div>
 
@@ -65,158 +63,233 @@
         const ctx = canvas.getContext('2d');
         const startBtn = document.getElementById('start-btn');
         const captureBtn = document.getElementById('capture-btn');
+        const loadingText = document.getElementById('loading');
+        const processCanvas = document.getElementById('process-canvas');
         const photoCanvas = document.getElementById('photo-canvas');
-        const flash = document.getElementById('flash');
-        const previewModal = document.getElementById('preview-modal');
-        const previewImg = document.getElementById('preview-img');
-        const closePreview = document.getElementById('close-preview');
-        const saveBtn = document.getElementById('save-btn');
-        const errorBanner = document.getElementById('error-banner');
 
-        let animationId, scanLineY = 0, scanDirection = 1;
         let isCameraOn = false;
-        let currentPhotoDataUrl = '';
+        let isCvReady = false;
+        let animationId;
+        let lastDetectTime = 0;
+        
+        // 存儲 OpenCV 檢測到的四個角（比例座標 0~1）
+        let detectedCorners = null; 
 
-        function showError(msg) {
-            errorBanner.innerText = msg;
-            errorBanner.style.display = 'block';
-            setTimeout(() => { errorBanner.style.display = 'none'; }, 5000);
+        // 當 OpenCV.js 加載完成時觸發
+        function onOpenCvReady() {
+            isCvReady = true;
+            loadingText.style.display = 'none';
+            console.log("OpenCV 引擎就緒");
         }
 
-        // 关键：每次尺寸变化，强制重新计算 canvas 尺寸，保证黄框居中
-        function resizeCanvas() {
-            if (!video.videoWidth) return;
-            // 设置覆盖层尺寸与视频实际显示区域一致
-            const rect = video.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
-        }
-        window.addEventListener('resize', resizeCanvas);
-
-        async function startCamera() {
-            if (!window.isSecureContext) {
-                showError("无法调用相机：请确保使用 HTTPS 网址访问，或电脑 localhost。");
+        // 點擊開啟相機
+        startBtn.addEventListener('click', async () => {
+            if (isCameraOn) return;
+            if (!isCvReady) {
+                alert("AI 引擎還在加載中，請稍等幾秒...");
                 return;
             }
+
+            loadingText.style.display = 'block';
+            loadingText.innerText = "正在啟動相機...";
+
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment' }
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
                 });
                 video.srcObject = stream;
                 
                 video.onloadedmetadata = () => {
-                    resizeCanvas();
-                    startDrawing(); // 启动黄框绘制
-                    isCameraOn = true;
-                    startBtn.innerText = "关闭相机";
+                    canvas.width = video.clientWidth;
+                    canvas.height = video.clientHeight;
+                    processCanvas.width = 320; // 縮小解析度以提高識別速度
+                    processCanvas.height = 240;
+                    
+                    startBtn.innerText = "相機已開啟";
                     captureBtn.disabled = false;
+                    isCameraOn = true;
+                    loadingText.style.display = 'none';
+                    
+                    // 開始識別循環
+                    detectLoop();
                 };
             } catch (err) {
-                console.error("相机启动失败: ", err);
-                showError("相机启动失败，请检查权限。");
+                loadingText.style.display = 'none';
+                alert("相機啟動失敗，請確保在 HTTPS 環境並允許權限");
+                console.error(err);
             }
+        });
+
+        // 核心：邊緣檢測與畫框循環
+        function detectLoop(timestamp) {
+            if (!isCameraOn) return;
+
+            // 每 300 毫秒處理一次（防止手機卡死），而不是每一幀都處理
+            if (timestamp - lastDetectTime > 300 && video.readyState === 4) {
+                lastDetectTime = timestamp;
+                detectDocumentEdge();
+            }
+
+            // 繪製黃框
+            drawOverlay();
+
+            requestAnimationFrame(detectLoop);
         }
 
-        function stopCamera() {
-            if (video.srcObject) {
-                video.srcObject.getTracks().forEach(track => track.stop());
-                video.srcObject = null;
+        // 使用 OpenCV 尋找四邊形
+        function detectDocumentEdge() {
+            let src = cv.imread(processCanvas); // 從隱藏 canvas 讀取
+            let dst = new cv.Mat();
+            let gray = new cv.Mat();
+            let edges = new cv.Mat();
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+
+            // 1. 轉灰度
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+            // 2. 高斯模糊去噪
+            cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+            // 3. Canny 邊緣檢測
+            cv.Canny(gray, edges, 50, 150);
+            // 4. 膨脹與腐蝕（連接斷裂的邊緣）
+            let M = cv.Mat.ones(3, 3, cv.CV_8U);
+            cv.dilate(edges, edges, M, new cv.Point(-1, -1), 1);
+            cv.erode(edges, edges, M, new cv.Point(-1, -1), 1);
+
+            // 5. 尋找輪廓
+            cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let maxArea = 0;
+            let bestCorners = null;
+
+            for (let i = 0; i < contours.size(); ++i) {
+                let contour = contours.get(i);
+                let area = cv.contourArea(contour);
+                
+                // 面積太小忽略
+                if (area > 5000) {
+                    let peri = cv.arcLength(contour, true);
+                    let approx = new cv.Mat();
+                    // 6. 多邊形逼近（尋找四邊形）
+                    cv.approxPolyDP(contour, approx, 0.02 * peri, true);
+
+                    if (approx.rows === 4) {
+                        // 找到四邊形且面積最大
+                        if (area > maxArea) {
+                            maxArea = area;
+                            bestCorners = [];
+                            for (let j = 0; j < 4; j++) {
+                                bestCorners.push({
+                                    x: approx.data32S[j * 2],     // 取得 X 座標
+                                    y: approx.data32S[j * 2 + 1]  // 取得 Y 座標
+                                });
+                            }
+                        }
+                    }
+                    approx.delete();
+                }
             }
-            cancelAnimationFrame(animationId);
+
+            // 如果找到了四邊形，轉換為比例 (0~1) 保存
+            if (bestCorners) {
+                // 排序四個角：左上，右上，右下，左下
+                bestCorners.sort((a, b) => a.y - b.y); // 先上下分
+                let top = bestCorners.slice(0, 2).sort((a, b) => a.x - b.x);
+                let bottom = bestCorners.slice(2, 4).sort((a, b) => a.x - b.x);
+                let ordered = [top[0], top[1], bottom[1], bottom[0]];
+
+                detectedCorners = ordered.map(p => ({
+                    x: p.x / processCanvas.width,
+                    y: p.y / processCanvas.height
+                }));
+            } else {
+                detectedCorners = null; // 沒找到就清除
+            }
+
+            // 釋放記憶體
+            src.delete(); dst.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete(); M.delete();
+        }
+
+        // 把畫面畫到隱藏 canvas 供 OpenCV 讀取
+        function updateProcessCanvas() {
+            const pCtx = processCanvas.getContext('2d');
+            pCtx.drawImage(video, 0, 0, processCanvas.width, processCanvas.height);
+        }
+
+        // 繪製黃色多邊形框
+        function drawOverlay() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            isCameraOn = false;
-            startBtn.innerText = "开启相机";
-            captureBtn.disabled = true;
-        }
 
-        // ==========================================
-        // 这里是画黄框的核心逻辑
-        // ==========================================
-        function startDrawing() {
-            // 1. 计算黄框大小：屏幕宽度的 80%，高度是宽度的 1.2倍
-            const boxWidth = canvas.width * 0.8;
-            const boxHeight = boxWidth * 1.2;
-            // 2. 计算位置：水平居中，垂直居中
-            const boxX = (canvas.width - boxWidth) / 2;
-            const boxY = (canvas.height - boxHeight) / 2;
+            if (detectedCorners) {
+                // 把比例座標還原成當前畫布座標
+                const points = detectedCorners.map(p => ({
+                    x: p.x * canvas.width,
+                    y: p.y * canvas.height
+                }));
 
-            function draw() {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                // --- 绘制半透明黑色遮罩（让框外变暗，突出中间） ---
-                ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+                // 畫半透明遮罩（框外變暗）
+                ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
                 ctx.beginPath();
                 ctx.rect(0, 0, canvas.width, canvas.height);
-                ctx.rect(boxX, boxY, boxWidth, boxHeight);
-                ctx.fill("evenodd"); // 核心：挖空中间，形成取景框
+                ctx.moveTo(points[0].x, points[0].y);
+                ctx.lineTo(points[1].x, points[1].y);
+                ctx.lineTo(points[2].x, points[2].y);
+                ctx.lineTo(points[3].x, points[3].y);
+                ctx.closePath();
+                ctx.fill("evenodd");
 
-                // --- 绘制黄色的细边框 ---
-                ctx.strokeStyle = "#FFD700"; // 黄色
+                // 畫黃色多邊形線
+                ctx.strokeStyle = "#FFD700";
                 ctx.lineWidth = 3;
-                ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
-
-                // --- 绘制四个角的粗黄色折线 ---
-                ctx.lineWidth = 8;
                 ctx.beginPath();
-                const cl = 40; // 角的长度
-                // 左上角
-                ctx.moveTo(boxX, boxY + cl); ctx.lineTo(boxX, boxY); ctx.lineTo(boxX + cl, boxY);
-                // 右上角
-                ctx.moveTo(boxX + boxWidth - cl, boxY); ctx.lineTo(boxX + boxWidth, boxY); ctx.lineTo(boxX + boxWidth, boxY + cl);
-                // 右下角
-                ctx.moveTo(boxX + boxWidth, boxY + boxHeight - cl); ctx.lineTo(boxX + boxWidth, boxY + boxHeight); ctx.lineTo(boxX + boxWidth - cl, boxY + boxHeight);
-                // 左下角
-                ctx.moveTo(boxX + cl, boxY + boxHeight); ctx.lineTo(boxX, boxY + boxHeight); ctx.lineTo(boxX, boxY + boxHeight - cl);
+                ctx.moveTo(points[0].x, points[0].y);
+                ctx.lineTo(points[1].x, points[1].y);
+                ctx.lineTo(points[2].x, points[2].y);
+                ctx.lineTo(points[3].x, points[3].y);
+                ctx.closePath();
                 ctx.stroke();
 
-                // --- 绘制上下移动的扫描光波 ---
-                scanLineY += 4 * scanDirection;
-                if (scanLineY > boxHeight || scanLineY < 0) {
-                    scanDirection *= -1;
-                }
-                // 渐变光波效果
-                const gradient = ctx.createLinearGradient(0, boxY + scanLineY - 80, 0, boxY + scanLineY);
-                gradient.addColorStop(0, "rgba(255, 215, 0, 0)");
-                gradient.addColorStop(1, "rgba(255, 215, 0, 0.7)");
-                ctx.fillStyle = gradient;
-                ctx.fillRect(boxX, boxY + scanLineY - 80, boxWidth, 80);
-
-                animationId = requestAnimationFrame(draw);
+                // 畫四個頂點的圓點
+                ctx.fillStyle = "#FF0000";
+                points.forEach(p => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
+                    ctx.fill();
+                });
             }
-            draw();
         }
 
-        function takePhoto() {
-            if (!isCameraOn) return;
-            flash.style.opacity = '1';
-            setTimeout(() => { flash.style.opacity = '0'; }, 100);
+        // 定時將 video 畫面傳給 processCanvas
+        setInterval(() => {
+            if (isCameraOn && video.readyState === 4) {
+                updateProcessCanvas();
+            }
+        }, 300);
 
-            // 拍照时，截取的是底层的 video 画面，所以不会有黄框
+        // 拍照功能
+        captureBtn.addEventListener('click', () => {
+            if (!isCameraOn) return;
             photoCanvas.width = video.videoWidth;
             photoCanvas.height = video.videoHeight;
             const pCtx = photoCanvas.getContext('2d');
             pCtx.drawImage(video, 0, 0, photoCanvas.width, photoCanvas.height);
+            
+            const imgUrl = photoCanvas.toDataURL('image/jpeg', 0.9);
+            document.getElementById('preview-img').src = imgUrl;
+            document.getElementById('preview-modal').style.display = 'flex';
+        });
 
-            currentPhotoDataUrl = photoCanvas.toDataURL('image/jpeg', 0.9);
-            previewImg.src = currentPhotoDataUrl;
-            previewModal.style.display = 'flex';
-        }
+        document.getElementById('close-preview').addEventListener('click', () => {
+            document.getElementById('preview-modal').style.display = 'none';
+        });
 
-        function savePhoto() {
-            if (!currentPhotoDataUrl) return;
+        document.getElementById('save-btn').addEventListener('click', () => {
             const link = document.createElement('a');
-            link.download = 'scan_photo_' + new Date().getTime() + '.jpg';
-            link.href = currentPhotoDataUrl;
-            document.body.appendChild(link);
+            link.download = 'scan_' + Date.now() + '.jpg';
+            link.href = document.getElementById('preview-img').src;
             link.click();
-            document.body.removeChild(link);
-            alert("照片已保存！");
-        }
+        });
 
-        startBtn.addEventListener('click', () => { isCameraOn ? stopCamera() : startCamera(); });
-        captureBtn.addEventListener('click', takePhoto);
-        closePreview.addEventListener('click', () => { previewModal.style.display = 'none'; previewImg.src = ''; });
-        saveBtn.addEventListener('click', savePhoto);
     </script>
 </body>
-</html>
+    </html>
