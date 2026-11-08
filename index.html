@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>AI 自動框選與裁切</title>
+    <title>AI 自動框選與精準裁切</title>
     <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
     <style>
         body { margin: 0; padding: 0; background-color: #000; height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-family: sans-serif; }
@@ -19,7 +19,7 @@
         #capture-btn:disabled { opacity: 0.3; }
         .btn { padding: 10px 20px; background-color: #333; color: #fff; border: none; border-radius: 20px; font-size: 14px; }
         
-        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #FFD700; font-size: 16px; z-index: 10; display: none; }
+        #status-text { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); color: #fff; background: rgba(0,0,0,0.6); padding: 8px 16px; border-radius: 20px; font-size: 14px; z-index: 10; display: none; }
         
         #preview-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100; }
         #preview-modal img { max-width: 90%; max-height: 70%; border-radius: 8px; box-shadow: 0 0 20px rgba(255,255,255,0.2); }
@@ -34,7 +34,7 @@
     <div id="camera-container">
         <video id="video" autoplay playsinline muted></video>
         <canvas id="overlay"></canvas>
-        <div id="loading">正在加載 AI 識別引擎...</div>
+        <div id="status-text">正在加載 AI 引擎...</div>
     </div>
 
     <div class="controls">
@@ -49,7 +49,7 @@
     <div id="preview-modal">
         <img id="preview-img" src="">
         <div class="modal-btns">
-            <button id="save-btn">保存裁切照片</button>
+            <button id="save-btn">保存照片</button>
             <button id="close-preview">關閉</button>
         </div>
     </div>
@@ -60,7 +60,7 @@
         const ctx = canvas.getContext('2d');
         const startBtn = document.getElementById('start-btn');
         const captureBtn = document.getElementById('capture-btn');
-        const loadingText = document.getElementById('loading');
+        const statusText = document.getElementById('status-text');
         const processCanvas = document.getElementById('process-canvas');
         const photoCanvas = document.getElementById('photo-canvas');
 
@@ -68,24 +68,24 @@
         let isCvReady = false;
         let animationId;
         let lastDetectTime = 0;
-        
-        // 保存檢測到的四個角（比例座標 0~1）
         let detectedCorners = null; 
 
+        // OpenCV 載入完成
         function onOpenCvReady() {
             isCvReady = true;
-            loadingText.style.display = 'none';
+            statusText.innerText = "AI 引擎已就緒，請開啟相機";
+            setTimeout(() => { statusText.style.display = 'none'; }, 2000);
         }
 
         startBtn.addEventListener('click', async () => {
             if (isCameraOn) return;
             if (!isCvReady) {
-                alert("AI 引擎還在加載中，請稍等...");
+                alert("AI 引擎還在加載中，請確認網絡暢通，稍等幾秒...");
                 return;
             }
 
-            loadingText.style.display = 'block';
-            loadingText.innerText = "正在啟動相機...";
+            statusText.style.display = 'block';
+            statusText.innerText = "正在啟動相機...";
 
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -96,20 +96,19 @@
                 video.onloadedmetadata = () => {
                     canvas.width = video.clientWidth;
                     canvas.height = video.clientHeight;
-                    // 處理用的畫布解析度可以稍高一點，裁切會更清晰
                     processCanvas.width = 640; 
                     processCanvas.height = 480;
                     
                     startBtn.innerText = "相機已開啟";
                     captureBtn.disabled = false;
                     isCameraOn = true;
-                    loadingText.style.display = 'none';
+                    statusText.style.display = 'none';
                     
                     detectLoop();
                 };
             } catch (err) {
-                loadingText.style.display = 'none';
-                alert("相機啟動失敗，請確保在 HTTPS 環境並允許權限");
+                statusText.style.display = 'none';
+                alert("相機啟動失敗，請確保使用 HTTPS 並允許權限");
             }
         });
 
@@ -146,7 +145,7 @@
                 let contour = contours.get(i);
                 let area = cv.contourArea(contour);
                 
-                if (area > 5000) { // 過濾太小的面積
+                if (area > 10000) { // 稍微提高門檻，避免抓到太小的雜物
                     let peri = cv.arcLength(contour, true);
                     let approx = new cv.Mat();
                     cv.approxPolyDP(contour, approx, 0.02 * peri, true);
@@ -168,7 +167,6 @@
             }
 
             if (bestCorners) {
-                // 排序四個角：左上(0)，右上(1)，右下(2)，左下(3)
                 bestCorners.sort((a, b) => a.y - b.y); 
                 let top = bestCorners.slice(0, 2).sort((a, b) => a.x - b.x);
                 let bottom = bestCorners.slice(2, 4).sort((a, b) => a.x - b.x);
@@ -194,13 +192,13 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             if (detectedCorners) {
+                // 如果有抓到邊緣，畫跟著物體變形的黃框
                 const points = detectedCorners.map(p => ({
                     x: p.x * canvas.width,
                     y: p.y * canvas.height
                 }));
 
-                // 框外遮罩變暗
-                ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+                ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
                 ctx.beginPath();
                 ctx.rect(0, 0, canvas.width, canvas.height);
                 ctx.moveTo(points[0].x, points[0].y);
@@ -210,7 +208,6 @@
                 ctx.closePath();
                 ctx.fill("evenodd");
 
-                // 黃框
                 ctx.strokeStyle = "#FFD700";
                 ctx.lineWidth = 4;
                 ctx.beginPath();
@@ -221,13 +218,18 @@
                 ctx.closePath();
                 ctx.stroke();
 
-                // 四個紅點
-                ctx.fillStyle = "#FF0000";
-                points.forEach(p => {
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
-                    ctx.fill();
-                });
+            } else {
+                // 如果沒抓到，畫一個固定在中間的黃框（備用提示）
+                const w = canvas.width * 0.8;
+                const h = w * 1.3;
+                const x = (canvas.width - w) / 2;
+                const y = (canvas.height - h) / 2;
+
+                ctx.strokeStyle = "rgba(255, 215, 0, 0.5)"; // 半透明黃，代表未鎖定
+                ctx.lineWidth = 2;
+                ctx.setLineDash([10, 10]); // 虛線
+                ctx.strokeRect(x, y, w, h);
+                ctx.setLineDash([]); // 恢復實線
             }
         }
 
@@ -238,36 +240,30 @@
         }, 300);
 
         // ==========================================
-        // 核心：拍照並裁切（透視變換）
+        // 核心：拍照並拉直（只留框內）
         // ==========================================
         captureBtn.addEventListener('click', () => {
             if (!isCameraOn) return;
 
             if (!detectedCorners) {
-                alert("未檢測到文件邊緣，請將文件對準相機！(已為你拍攝全圖)");
-                // 如果沒檢測到，就直接拍全圖
-                takeFullPhoto();
+                alert("未檢測到文件邊緣！\n請將文件放在有對比度的背景上，並讓黃框變成實線後再拍。");
                 return;
             }
 
-            // 1. 取得原圖（高解析度）
             photoCanvas.width = video.videoWidth;
             photoCanvas.height = video.videoHeight;
             const pCtx = photoCanvas.getContext('2d');
             pCtx.drawImage(video, 0, 0, photoCanvas.width, photoCanvas.height);
 
             try {
-                // 2. 將 OpenCV 讀取原圖
                 let src = cv.imread(photoCanvas);
                 let dst = new cv.Mat();
 
-                // 3. 將比例座標轉換為原圖的絕對像素座標
                 let pts = detectedCorners.map(p => ({
                     x: p.x * photoCanvas.width,
                     y: p.y * photoCanvas.height
                 }));
 
-                // 4. 定義來源的四個角 (左上, 右上, 右下, 左下)
                 let srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
                     pts[0].x, pts[0].y, 
                     pts[1].x, pts[1].y, 
@@ -275,7 +271,7 @@
                     pts[3].x, pts[3].y
                 ]);
 
-                // 5. 計算輸出的寬高（使用勾股定理算出黃框的邊長）
+                // 計算拉直後的長寬
                 let widthA = Math.sqrt(Math.pow(pts[2].x - pts[3].x, 2) + Math.pow(pts[2].y - pts[3].y, 2));
                 let widthB = Math.sqrt(Math.pow(pts[1].x - pts[0].x, 2) + Math.pow(pts[1].y - pts[0].y, 2));
                 let maxWidth = Math.max(widthA, widthB);
@@ -284,7 +280,6 @@
                 let heightB = Math.sqrt(Math.pow(pts[0].x - pts[2].x, 2) + Math.pow(pts[0].y - pts[2].y, 2));
                 let maxHeight = Math.max(heightA, heightB);
 
-                // 6. 定義目標的四個角 (拉直成方正的矩形)
                 let dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
                     0, 0, 
                     maxWidth - 1, 0, 
@@ -292,38 +287,21 @@
                     0, maxHeight - 1
                 ]);
 
-                // 7. 進行透視變換
                 let M = cv.getPerspectiveTransform(srcTri, dstTri);
                 let dsize = new cv.Size(maxWidth, maxHeight);
                 cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
 
-                // 8. 將裁切後的結果輸出到 Canvas
                 cv.imshow(photoCanvas, dst);
 
-                // 釋放記憶體
                 src.delete(); dst.delete(); srcTri.delete(); dstTri.delete(); M.delete();
 
             } catch (error) {
-                console.error("OpenCV 處理失敗:", error);
-                alert("圖像處理出錯，為你顯示原圖。");
+                console.error("裁切失敗:", error);
             }
 
-            // 顯示結果
-            showPreview(photoCanvas.toDataURL('image/jpeg', 0.95));
-        });
-
-        function takeFullPhoto() {
-            photoCanvas.width = video.videoWidth;
-            photoCanvas.height = video.videoHeight;
-            const pCtx = photoCanvas.getContext('2d');
-            pCtx.drawImage(video, 0, 0, photoCanvas.width, photoCanvas.height);
-            showPreview(photoCanvas.toDataURL('image/jpeg', 0.9));
-        }
-
-        function showPreview(imgUrl) {
-            document.getElementById('preview-img').src = imgUrl;
+            document.getElementById('preview-img').src = photoCanvas.toDataURL('image/jpeg', 0.95);
             document.getElementById('preview-modal').style.display = 'flex';
-        }
+        });
 
         document.getElementById('close-preview').addEventListener('click', () => {
             document.getElementById('preview-modal').style.display = 'none';
