@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 扫描与拍照 - 带黄框</title>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-family: sans-serif; }
+        #camera-container { position: relative; flex: 1; overflow: hidden; background: #222; }
+        #video { width: 100%; height: 100%; object-fit: cover; }
+        /* 黄框动画就在这个 canvas 上 */
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+        #photo-canvas { display: none; }
+        
+        .controls { height: 130px; background-color: #111; display: flex; justify-content: space-around; align-items: center; padding: 0 20px; z-index: 10; }
+        
+        #capture-btn { width: 70px; height: 70px; border-radius: 50%; background-color: transparent; border: 5px solid #fff; position: relative; cursor: pointer; transition: transform 0.1s; }
+        #capture-btn::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 55px; height: 55px; background-color: #fff; border-radius: 50%; transition: background-color 0.2s; }
+        #capture-btn:active::after { background-color: #ccc; }
+        #capture-btn:disabled { opacity: 0.3; }
+
+        .btn { padding: 10px 20px; background-color: #333; color: #fff; border: none; border-radius: 20px; font-size: 14px; cursor: pointer; }
+
+        #flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: white; opacity: 0; pointer-events: none; transition: opacity 0.1s ease-out; z-index: 5; }
+
+        #preview-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100; }
+        #preview-modal img { max-width: 90%; max-height: 70%; border-radius: 8px; box-shadow: 0 0 20px rgba(255,255,255,0.2); }
+        .modal-btns { margin-top: 20px; display: flex; gap: 15px; }
+        .modal-btns button { padding: 12px 30px; border: none; border-radius: 25px; font-size: 16px; cursor: pointer; }
+        #save-btn { background: #4CAF50; color: white; }
+        #close-preview { background: #fff; color: #000; }
+
+        #error-banner { display:none; position:absolute; top:20px; left:50%; transform:translateX(-50%); background:rgba(220,53,69,0.9); color:white; padding:12px; border-radius:8px; text-align:center; width:80%; z-index:20; font-size:14px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    </style>
+</head>
+<body>
+
+    <div id="camera-container">
+        <video id="video" autoplay playsinline muted></video>
+        <!-- 这个 canvas 就是画黄框的地方 -->
+        <canvas id="overlay"></canvas>
+        <div id="flash"></div>
+        <div id="error-banner"></div>
+    </div>
+
+    <div class="controls">
+        <button id="start-btn" class="btn">开启相机</button>
+        <button id="capture-btn" disabled></button>
+        <div style="width: 80px;"></div>
+    </div>
+
+    <canvas id="photo-canvas"></canvas>
+
+    <div id="preview-modal">
+        <img id="preview-img" src="" alt="拍照结果">
+        <div class="modal-btns">
+            <button id="save-btn">保存到相册</button>
+            <button id="close-preview">关闭</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('overlay');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('start-btn');
+        const captureBtn = document.getElementById('capture-btn');
+        const photoCanvas = document.getElementById('photo-canvas');
+        const flash = document.getElementById('flash');
+        const previewModal = document.getElementById('preview-modal');
+        const previewImg = document.getElementById('preview-img');
+        const closePreview = document.getElementById('close-preview');
+        const saveBtn = document.getElementById('save-btn');
+        const errorBanner = document.getElementById('error-banner');
+
+        let animationId, scanLineY = 0, scanDirection = 1;
+        let isCameraOn = false;
+        let currentPhotoDataUrl = '';
+
+        function showError(msg) {
+            errorBanner.innerText = msg;
+            errorBanner.style.display = 'block';
+            setTimeout(() => { errorBanner.style.display = 'none'; }, 5000);
+        }
+
+        // 关键：每次尺寸变化，强制重新计算 canvas 尺寸，保证黄框居中
+        function resizeCanvas() {
+            if (!video.videoWidth) return;
+            // 设置覆盖层尺寸与视频实际显示区域一致
+            const rect = video.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        async function startCamera() {
+            if (!window.isSecureContext) {
+                showError("无法调用相机：请确保使用 HTTPS 网址访问，或电脑 localhost。");
+                return;
+            }
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' }
+                });
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    resizeCanvas();
+                    startDrawing(); // 启动黄框绘制
+                    isCameraOn = true;
+                    startBtn.innerText = "关闭相机";
+                    captureBtn.disabled = false;
+                };
+            } catch (err) {
+                console.error("相机启动失败: ", err);
+                showError("相机启动失败，请检查权限。");
+            }
+        }
+
+        function stopCamera() {
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            cancelAnimationFrame(animationId);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            isCameraOn = false;
+            startBtn.innerText = "开启相机";
+            captureBtn.disabled = true;
+        }
+
+        // ==========================================
+        // 这里是画黄框的核心逻辑
+        // ==========================================
+        function startDrawing() {
+            // 1. 计算黄框大小：屏幕宽度的 80%，高度是宽度的 1.2倍
+            const boxWidth = canvas.width * 0.8;
+            const boxHeight = boxWidth * 1.2;
+            // 2. 计算位置：水平居中，垂直居中
+            const boxX = (canvas.width - boxWidth) / 2;
+            const boxY = (canvas.height - boxHeight) / 2;
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // --- 绘制半透明黑色遮罩（让框外变暗，突出中间） ---
+                ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
+                ctx.beginPath();
+                ctx.rect(0, 0, canvas.width, canvas.height);
+                ctx.rect(boxX, boxY, boxWidth, boxHeight);
+                ctx.fill("evenodd"); // 核心：挖空中间，形成取景框
+
+                // --- 绘制黄色的细边框 ---
+                ctx.strokeStyle = "#FFD700"; // 黄色
+                ctx.lineWidth = 3;
+                ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+                // --- 绘制四个角的粗黄色折线 ---
+                ctx.lineWidth = 8;
+                ctx.beginPath();
+                const cl = 40; // 角的长度
+                // 左上角
+                ctx.moveTo(boxX, boxY + cl); ctx.lineTo(boxX, boxY); ctx.lineTo(boxX + cl, boxY);
+                // 右上角
+                ctx.moveTo(boxX + boxWidth - cl, boxY); ctx.lineTo(boxX + boxWidth, boxY); ctx.lineTo(boxX + boxWidth, boxY + cl);
+                // 右下角
+                ctx.moveTo(boxX + boxWidth, boxY + boxHeight - cl); ctx.lineTo(boxX + boxWidth, boxY + boxHeight); ctx.lineTo(boxX + boxWidth - cl, boxY + boxHeight);
+                // 左下角
+                ctx.moveTo(boxX + cl, boxY + boxHeight); ctx.lineTo(boxX, boxY + boxHeight); ctx.lineTo(boxX, boxY + boxHeight - cl);
+                ctx.stroke();
+
+                // --- 绘制上下移动的扫描光波 ---
+                scanLineY += 4 * scanDirection;
+                if (scanLineY > boxHeight || scanLineY < 0) {
+                    scanDirection *= -1;
+                }
+                // 渐变光波效果
+                const gradient = ctx.createLinearGradient(0, boxY + scanLineY - 80, 0, boxY + scanLineY);
+                gradient.addColorStop(0, "rgba(255, 215, 0, 0)");
+                gradient.addColorStop(1, "rgba(255, 215, 0, 0.7)");
+                ctx.fillStyle = gradient;
+                ctx.fillRect(boxX, boxY + scanLineY - 80, boxWidth, 80);
+
+                animationId = requestAnimationFrame(draw);
+            }
+            draw();
+        }
+
+        function takePhoto() {
+            if (!isCameraOn) return;
+            flash.style.opacity = '1';
+            setTimeout(() => { flash.style.opacity = '0'; }, 100);
+
+            // 拍照时，截取的是底层的 video 画面，所以不会有黄框
+            photoCanvas.width = video.videoWidth;
+            photoCanvas.height = video.videoHeight;
+            const pCtx = photoCanvas.getContext('2d');
+            pCtx.drawImage(video, 0, 0, photoCanvas.width, photoCanvas.height);
+
+            currentPhotoDataUrl = photoCanvas.toDataURL('image/jpeg', 0.9);
+            previewImg.src = currentPhotoDataUrl;
+            previewModal.style.display = 'flex';
+        }
+
+        function savePhoto() {
+            if (!currentPhotoDataUrl) return;
+            const link = document.createElement('a');
+            link.download = 'scan_photo_' + new Date().getTime() + '.jpg';
+            link.href = currentPhotoDataUrl;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            alert("照片已保存！");
+        }
+
+        startBtn.addEventListener('click', () => { isCameraOn ? stopCamera() : startCamera(); });
+        captureBtn.addEventListener('click', takePhoto);
+        closePreview.addEventListener('click', () => { previewModal.style.display = 'none'; previewImg.src = ''; });
+        saveBtn.addEventListener('click', savePhoto);
+    </script>
+</body>
+</html>
